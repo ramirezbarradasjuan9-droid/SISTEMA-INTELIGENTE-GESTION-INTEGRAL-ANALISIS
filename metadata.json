@@ -1,0 +1,5 @@
+{
+  "name": "SIGG - Sistema GeoInt",
+  "description": "Sistema de Gestión e Inteligencia Geoespacial para análisis forense digital y gestión de casos, con interfaz Dark HUD e integración de IA Gemini.",
+  "requestFramePermissions": []
+}
