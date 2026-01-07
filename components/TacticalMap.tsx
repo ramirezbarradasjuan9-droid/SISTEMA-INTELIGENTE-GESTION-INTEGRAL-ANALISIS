@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { Target, RiskLevel } from '../types';
-import { Loader, MapPin, WifiOff, Share2, Link, Mail, Check, Copy } from 'lucide-react';
+import { Loader, MapPin, WifiOff, Share2, Link, Mail, Check, Camera, Download, X, Maximize } from 'lucide-react';
+import html2canvas from 'html2canvas';
 
 interface TacticalMapProps {
   targets: Target[];
@@ -103,15 +104,22 @@ const project = (lat: number, lng: number) => {
 
 const TacticalMap: React.FC<TacticalMapProps> = ({ targets, selectedTargetId, onSelectTarget, height = 'h-96' }) => {
   const mapRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [useFallback, setUseFallback] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const mapInstance = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
+  
+  // Changed: Use a Map to track markers by ID for real-time updates
+  const markersRef = useRef<Map<string, any>>(new Map());
   const initTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Share State
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  
+  // Snapshot State
+  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   // Calculate pins for fallback view
   const pins = useMemo(() => {
@@ -129,6 +137,29 @@ const TacticalMap: React.FC<TacticalMapProps> = ({ targets, selectedTargetId, on
     }
     // Default or map center (mocked here as we aren't tracking center state explicitly)
     return { lat: 20.0000, lng: 0.0000 };
+  };
+
+  const handleFitBounds = () => {
+    const w = window as any;
+    if (useFallback || !mapInstance.current || !w.google || !w.google.maps) return;
+
+    const bounds = new w.google.maps.LatLngBounds();
+    let count = 0;
+
+    targets.forEach(t => {
+        if (t.lastKnownLocation) {
+            bounds.extend(t.lastKnownLocation);
+            count++;
+        }
+    });
+
+    if (count > 0) {
+        mapInstance.current.fitBounds(bounds);
+        // Optional: If only one point, fitBounds zooms in too much by default
+        if (count === 1) {
+            mapInstance.current.setZoom(12);
+        }
+    }
   };
 
   const handleCopyLink = () => {
@@ -160,11 +191,49 @@ OBJETIVO ID: ${selectedTargetId || 'N/A'}
 ENLACE SEGURO:
 ${window.location.origin}/ops?lat=${loc.lat}&lng=${loc.lng}
 
+NOTA: Si ha descargado la instantánea del mapa, por favor adjúntela manualmente a este correo.
+
 -----------------------------------
 Generado por Sistema SIGG.OS
     `;
     window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     setShowShareMenu(false);
+  };
+
+  const handleCaptureSnapshot = async () => {
+    if (!containerRef.current) return;
+    setIsCapturing(true);
+    setShowShareMenu(false);
+
+    try {
+        // Wait for UI to settle (close menus)
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        const canvas = await html2canvas(containerRef.current, {
+            useCORS: true,
+            allowTaint: true,
+            backgroundColor: '#101015',
+            logging: false,
+            scale: 2 // High resolution
+        });
+
+        const dataUrl = canvas.toDataURL('image/png');
+        setSnapshotUrl(dataUrl);
+    } catch (error) {
+        console.error("Snapshot failed:", error);
+    } finally {
+        setIsCapturing(false);
+    }
+  };
+
+  const downloadSnapshot = () => {
+    if (!snapshotUrl) return;
+    const link = document.createElement('a');
+    link.href = snapshotUrl;
+    link.download = `SIGG_OPS_SNAPSHOT_${new Date().getTime()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   useEffect(() => {
@@ -321,6 +390,7 @@ Generado por Sistema SIGG.OS
        if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
        if (markersRef.current) {
            markersRef.current.forEach(m => m.setMap(null));
+           markersRef.current.clear();
        }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -338,13 +408,6 @@ Generado por Sistema SIGG.OS
     const w = window as any;
     if (!w.google || !mapInstance.current) return;
 
-    // Clear existing
-    markersRef.current.forEach(marker => marker.setMap(null));
-    markersRef.current = [];
-
-    const bounds = new w.google.maps.LatLngBounds();
-    let hasPoints = false;
-
     // Ensure Marker class is available (might need to wait for importLibrary if using loading=async)
     let MarkerClass = w.google.maps.Marker;
     if (!MarkerClass && w.google.maps.importLibrary) {
@@ -358,7 +421,6 @@ Generado por Sistema SIGG.OS
     
     // If we still don't have a marker class, we can't render pins
     if (!MarkerClass) {
-        // Try fallback to w.google.maps.Marker one last time if library load failed but object exists
         if (w.google.maps.Marker) {
              MarkerClass = w.google.maps.Marker;
         } else {
@@ -366,10 +428,22 @@ Generado por Sistema SIGG.OS
         }
     }
 
-    // Safe SymbolPath
     const symbolPathCircle = w.google.maps.SymbolPath ? w.google.maps.SymbolPath.CIRCLE : 0;
     const animationBounce = w.google.maps.Animation ? w.google.maps.Animation.BOUNCE : 1;
+    const bounds = new w.google.maps.LatLngBounds();
+    let hasPoints = false;
 
+    // 1. Identify active targets and remove markers for deleted targets
+    const activeIds = new Set(targets.map(t => t.id));
+    Array.from(markersRef.current.keys()).forEach(id => {
+        if (!activeIds.has(id)) {
+            const marker = markersRef.current.get(id);
+            marker.setMap(null);
+            markersRef.current.delete(id);
+        }
+    });
+
+    // 2. Update existing markers or create new ones
     targets.forEach(target => {
       if (target.lastKnownLocation) {
         hasPoints = true;
@@ -379,37 +453,51 @@ Generado por Sistema SIGG.OS
         const isSelected = selectedTargetId === target.id;
         const color = target.riskLevel === RiskLevel.CRITICAL ? '#EF4444' : '#2D9CDB';
 
-        const marker = new MarkerClass({
-          position: position,
-          map: mapInstance.current,
-          title: target.codeName,
-          animation: isSelected ? animationBounce : null,
-          icon: {
+        const iconConfig = {
             path: symbolPathCircle,
             scale: isSelected ? 12 : 8,
             fillColor: color,
             fillOpacity: 0.9,
             strokeColor: '#FFFFFF',
             strokeWeight: 2,
-          },
-        });
+        };
 
-        marker.addListener("click", () => {
-          if (onSelectTarget) onSelectTarget(target.id);
-        });
+        if (markersRef.current.has(target.id)) {
+             // Update existing marker
+             const marker = markersRef.current.get(target.id);
+             marker.setPosition(position);
+             marker.setIcon(iconConfig);
+             marker.setAnimation(isSelected ? animationBounce : null);
+             marker.setZIndex(isSelected ? 100 : 10);
+        } else {
+             // Create new marker
+             const marker = new MarkerClass({
+                position: position,
+                map: mapInstance.current,
+                title: target.codeName,
+                animation: isSelected ? animationBounce : null,
+                icon: iconConfig,
+                zIndex: isSelected ? 100 : 10,
+             });
 
-        markersRef.current.push(marker);
+             marker.addListener("click", () => {
+                if (onSelectTarget) onSelectTarget(target.id);
+             });
+
+             markersRef.current.set(target.id, marker);
+        }
       }
     });
 
+    // 3. Viewport Logic
     if (hasPoints) {
        if (selectedTargetId) {
            const selected = targets.find(t => t.id === selectedTargetId);
            if (selected && selected.lastKnownLocation) {
                mapInstance.current.panTo({ lat: selected.lastKnownLocation.lat, lng: selected.lastKnownLocation.lng });
-               mapInstance.current.setZoom(12);
            }
-       } else if (markersRef.current.length > 0) {
+       } else if (markersRef.current.size > 0 && mapInstance.current.getZoom() < 4) {
+           // Only fit bounds on low zoom to avoid interrupting user manual navigation during updates
            mapInstance.current.fitBounds(bounds);
        }
     }
@@ -418,6 +506,23 @@ Generado por Sistema SIGG.OS
   const SharedOverlay = () => (
     <div className="absolute top-4 right-4 z-20 flex flex-col items-end space-y-2">
         <div className="flex space-x-2">
+            {!useFallback && (
+                <button 
+                    onClick={handleFitBounds}
+                    className="flex items-center space-x-2 bg-black/80 backdrop-blur-sm px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-accent transition-all duration-200"
+                    title="Ajustar Vista"
+                >
+                    <Maximize className="w-4 h-4" />
+                </button>
+            )}
+             <button 
+                onClick={handleCaptureSnapshot}
+                disabled={isCapturing}
+                className="flex items-center space-x-2 bg-black/80 backdrop-blur-sm px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-accent transition-all duration-200"
+                title="Capturar Instantánea"
+            >
+                <Camera className={`w-4 h-4 ${isCapturing ? 'animate-pulse text-danger' : ''}`} />
+            </button>
             <button 
                 onClick={() => setShowShareMenu(!showShareMenu)}
                 className={`flex items-center space-x-2 bg-black/80 backdrop-blur-sm px-3 py-1.5 rounded border transition-all duration-200 ${showShareMenu ? 'border-accent text-accent' : 'border-gray-700 text-gray-400 hover:text-white'}`}
@@ -454,102 +559,120 @@ Generado por Sistema SIGG.OS
     </div>
   );
 
-  if (useFallback) {
-      return (
-        <div className={`relative w-full ${height} bg-[#101015] rounded-lg overflow-hidden border border-gray-800 shadow-inner group`}>
-            {/* Grid Overlay */}
-            <div className="absolute inset-0 opacity-10 pointer-events-none" 
-                style={{ 
-                    backgroundImage: 'linear-gradient(#2D9CDB 1px, transparent 1px), linear-gradient(90deg, #2D9CDB 1px, transparent 1px)',
-                    backgroundSize: '40px 40px'
-                }}
-            ></div>
+  return (
+    <>
+      <div 
+        ref={containerRef}
+        className={`relative w-full ${height} bg-[#101015] rounded-lg overflow-hidden border border-gray-800 shadow-inner group`}
+      >
+        <div className="absolute inset-0 opacity-5 pointer-events-none z-10" 
+            style={{ 
+                backgroundImage: 'linear-gradient(#2D9CDB 1px, transparent 1px), linear-gradient(90deg, #2D9CDB 1px, transparent 1px)',
+                backgroundSize: '40px 40px'
+            }}
+        ></div>
+        
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/5 to-transparent h-[10%] w-full animate-[scan_3s_linear_infinite] pointer-events-none opacity-10 z-10"></div>
 
-            {/* World Map SVG Silhouette */}
-            <svg className="absolute inset-0 w-full h-full text-[#1E1E2E] fill-current opacity-40" viewBox="0 0 100 50" preserveAspectRatio="none">
-                <path d="M5,10 Q20,5 30,15 T50,20 T80,10 T95,20 V40 H5 Z" />
-                <rect x="0" y="0" width="100" height="100" fill="none" />
-                <circle cx="20" cy="20" r="10" stroke="#2D9CDB" strokeWidth="0.1" fill="none" opacity="0.2" />
-                <circle cx="80" cy="30" r="15" stroke="#2D9CDB" strokeWidth="0.1" fill="none" opacity="0.2" />
-            </svg>
-            
-            {/* Scanline Effect */}
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/5 to-transparent h-[10%] w-full animate-[scan_3s_linear_infinite] pointer-events-none opacity-20"></div>
-
-            {/* Shared UI Overlay */}
-            <SharedOverlay />
-
-            {/* Pins */}
-            {pins.map((target) => (
-                <div 
-                key={target.id}
-                className={`absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all duration-300 ${selectedTargetId === target.id ? 'scale-125 z-10' : 'hover:scale-110'}`}
-                style={{ left: `${target.x}%`, top: `${target.y}%` }}
-                onClick={() => onSelectTarget && onSelectTarget(target.id)}
-                >
-                <div className="relative flex items-center justify-center">
-                    <div className={`absolute w-8 h-8 rounded-full border border-accent/50 animate-ping ${selectedTargetId === target.id ? 'opacity-100' : 'opacity-0'}`}></div>
-                    <MapPin className={`w-5 h-5 ${target.riskLevel === 'CRITICAL' ? 'text-danger' : 'text-accent'} drop-shadow-[0_0_5px_rgba(45,156,219,0.8)]`} fill="currentColor" />
-                    <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-panel/90 border border-gray-700 px-2 py-1 rounded text-xs whitespace-nowrap text-white hidden group-hover:block pointer-events-none">
-                        <span className="font-mono text-accent">{target.codeName}</span>
+        {useFallback ? (
+            <div className="relative w-full h-full">
+                {/* World Map SVG Silhouette */}
+                <svg className="absolute inset-0 w-full h-full text-[#1E1E2E] fill-current opacity-40" viewBox="0 0 100 50" preserveAspectRatio="none">
+                    <path d="M5,10 Q20,5 30,15 T50,20 T80,10 T95,20 V40 H5 Z" />
+                    <rect x="0" y="0" width="100" height="100" fill="none" />
+                    <circle cx="20" cy="20" r="10" stroke="#2D9CDB" strokeWidth="0.1" fill="none" opacity="0.2" />
+                    <circle cx="80" cy="30" r="15" stroke="#2D9CDB" strokeWidth="0.1" fill="none" opacity="0.2" />
+                </svg>
+                
+                {/* Pins for fallback */}
+                {pins.map((target) => (
+                    <div 
+                    key={target.id}
+                    className={`absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all duration-300 ${selectedTargetId === target.id ? 'scale-125 z-10' : 'hover:scale-110'}`}
+                    style={{ left: `${target.x}%`, top: `${target.y}%` }}
+                    onClick={() => onSelectTarget && onSelectTarget(target.id)}
+                    >
+                    <div className="relative flex items-center justify-center">
+                        <div className={`absolute w-8 h-8 rounded-full border border-accent/50 animate-ping ${selectedTargetId === target.id ? 'opacity-100' : 'opacity-0'}`}></div>
+                        <MapPin className={`w-5 h-5 ${target.riskLevel === 'CRITICAL' ? 'text-danger' : 'text-accent'} drop-shadow-[0_0_5px_rgba(45,156,219,0.8)]`} fill="currentColor" />
                     </div>
-                </div>
-                </div>
-            ))}
+                    </div>
+                ))}
+            </div>
+        ) : (
+             <div ref={mapRef} className="w-full h-full" />
+        )}
 
-            <div className="absolute bottom-4 left-4 z-10 bg-black/80 border border-gray-700 p-2 rounded backdrop-blur-sm pointer-events-none">
-                <div className="text-[10px] text-accent font-mono mb-1">OBJETIVO (VECTORIAL)</div>
-                <div className="text-xs text-white font-mono">
-                    LAT: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lat.toFixed(4) : '--.----'}
-                </div>
-                <div className="text-xs text-white font-mono">
-                    LNG: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lng.toFixed(4) : '--.----'}
+        {isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+                <div className="text-accent flex flex-col items-center animate-pulse">
+                    <Loader className="w-8 h-8 animate-spin mb-2" />
+                    <span className="font-mono text-xs tracking-widest">CONECTANDO SATÉLITE...</span>
                 </div>
             </div>
-            <div className="absolute top-4 left-4 z-10 flex items-center space-x-2 bg-black/50 px-2 py-1 rounded border border-gray-800">
+        )}
+
+        {/* Shared UI Overlay */}
+        <SharedOverlay />
+
+        <div className="absolute bottom-4 left-4 z-10 bg-black/80 border border-gray-700 p-2 rounded backdrop-blur-sm pointer-events-none">
+            <div className="text-[10px] text-accent font-mono mb-1">
+                {useFallback ? "OBJETIVO (VECTORIAL)" : "COORDENADAS"}
+            </div>
+            <div className="text-xs text-white font-mono">
+                LAT: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lat.toFixed(6) : '---.---'}
+            </div>
+            <div className="text-xs text-white font-mono">
+                LNG: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lng.toFixed(6) : '---.---'}
+            </div>
+        </div>
+
+        {useFallback && (
+             <div className="absolute top-4 left-4 z-10 flex items-center space-x-2 bg-black/50 px-2 py-1 rounded border border-gray-800">
                 <WifiOff className="w-3 h-3 text-orange-500" />
                 <span className="font-mono text-[10px] text-gray-500">MODO OFFLINE</span>
             </div>
-        </div>
-      );
-  }
+        )}
+      </div>
 
-  // Google Maps Render
-  return (
-    <div className={`relative w-full ${height} bg-[#101015] rounded-lg overflow-hidden border border-gray-800 shadow-inner group`}>
-      <div className="absolute inset-0 opacity-5 pointer-events-none z-10" 
-        style={{ 
-            backgroundImage: 'linear-gradient(#2D9CDB 1px, transparent 1px), linear-gradient(90deg, #2D9CDB 1px, transparent 1px)',
-            backgroundSize: '40px 40px'
-        }}
-      ></div>
-      
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/5 to-transparent h-[10%] w-full animate-[scan_3s_linear_infinite] pointer-events-none opacity-10 z-10"></div>
+      {/* Snapshot Preview Modal */}
+      {snapshotUrl && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-panel border border-gray-700 rounded-lg p-4 max-w-4xl w-full mx-4 shadow-2xl">
+                  <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-2">
+                      <div className="flex items-center space-x-2">
+                          <Camera className="w-5 h-5 text-accent" />
+                          <h3 className="text-white font-bold tracking-widest">INSTANTÁNEA TÁCTICA</h3>
+                      </div>
+                      <button onClick={() => setSnapshotUrl(null)} className="text-gray-400 hover:text-white">
+                          <X className="w-6 h-6" />
+                      </button>
+                  </div>
+                  
+                  <div className="bg-black/50 border border-gray-800 rounded overflow-hidden mb-4 flex justify-center">
+                      <img src={snapshotUrl} alt="Tactical Snapshot" className="max-h-[60vh] object-contain" />
+                  </div>
 
-      <div ref={mapRef} className="w-full h-full" />
-
-      {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
-              <div className="text-accent flex flex-col items-center animate-pulse">
-                  <Loader className="w-8 h-8 animate-spin mb-2" />
-                  <span className="font-mono text-xs tracking-widest">CONECTANDO SATÉLITE...</span>
+                  <div className="flex justify-end space-x-3">
+                       <button 
+                          onClick={handleEmailShare}
+                          className="flex items-center space-x-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded font-mono text-sm border border-gray-700 transition-colors"
+                      >
+                          <Mail className="w-4 h-4" />
+                          <span>ENVIAR REPORTE</span>
+                      </button>
+                      <button 
+                          onClick={downloadSnapshot}
+                          className="flex items-center space-x-2 px-4 py-2 bg-accent hover:bg-sky-400 text-black rounded font-mono text-sm font-bold transition-colors"
+                      >
+                          <Download className="w-4 h-4" />
+                          <span>DESCARGAR PNG</span>
+                      </button>
+                  </div>
               </div>
           </div>
       )}
-
-      {/* Shared UI Overlay */}
-      <SharedOverlay />
-
-      <div className="absolute bottom-4 left-4 z-10 bg-black/80 border border-gray-700 p-2 rounded backdrop-blur-sm pointer-events-none">
-          <div className="text-[10px] text-accent font-mono mb-1">COORDENADAS</div>
-          <div className="text-xs text-white font-mono">
-             LAT: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lat.toFixed(6) : '---.---'}
-          </div>
-          <div className="text-xs text-white font-mono">
-             LNG: {selectedTargetId ? targets.find(t=>t.id===selectedTargetId)?.lastKnownLocation?.lng.toFixed(6) : '---.---'}
-          </div>
-      </div>
-    </div>
+    </>
   );
 };
 
