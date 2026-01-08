@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import TacticalMap from './components/TacticalMap';
 import TargetDetail from './components/TargetDetail';
 import EvidencePanel from './components/EvidencePanel';
+import ToolsPanel from './components/ToolsPanel';
 import AIChat from './components/AIChat';
 import { MOCK_TARGETS } from './constants';
 import { Target, Evidence } from './types';
@@ -182,6 +183,8 @@ const App = () => {
         );
       case 'evidence':
         return <EvidencePanel targets={targets} onAddEvidence={handleAddEvidence} />;
+      case 'tools':
+        return <ToolsPanel targets={targets} />;
       case 'ai':
         return (
             <div className="h-full max-w-4xl mx-auto">

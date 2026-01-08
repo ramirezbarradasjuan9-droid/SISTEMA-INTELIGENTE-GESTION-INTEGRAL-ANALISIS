@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Users, Map, FileText, Bot, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, Map, FileText, Bot, Settings, LogOut, Terminal } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -13,6 +13,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
     { id: 'targets', icon: Users, label: 'Objetivos' },
     { id: 'map', icon: Map, label: 'Mapa Ops' },
     { id: 'evidence', icon: FileText, label: 'Evidencia' },
+    { id: 'tools', icon: Terminal, label: 'Herramientas' },
     { id: 'ai', icon: Bot, label: 'Analista IA' },
   ];
 

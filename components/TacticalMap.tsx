@@ -143,22 +143,26 @@ const TacticalMap: React.FC<TacticalMapProps> = ({ targets, selectedTargetId, on
     const w = window as any;
     if (useFallback || !mapInstance.current || !w.google || !w.google.maps) return;
 
-    const bounds = new w.google.maps.LatLngBounds();
-    let count = 0;
+    try {
+        const bounds = new w.google.maps.LatLngBounds();
+        let count = 0;
 
-    targets.forEach(t => {
-        if (t.lastKnownLocation) {
-            bounds.extend(t.lastKnownLocation);
-            count++;
-        }
-    });
+        targets.forEach(t => {
+            if (t.lastKnownLocation) {
+                bounds.extend(t.lastKnownLocation);
+                count++;
+            }
+        });
 
-    if (count > 0) {
-        mapInstance.current.fitBounds(bounds);
-        // Optional: If only one point, fitBounds zooms in too much by default
-        if (count === 1) {
-            mapInstance.current.setZoom(12);
+        if (count > 0) {
+            mapInstance.current.fitBounds(bounds);
+            // Optional: If only one point, fitBounds zooms in too much by default
+            if (count === 1) {
+                mapInstance.current.setZoom(12);
+            }
         }
+    } catch (e) {
+        console.warn("Error fitting bounds:", e);
     }
   };
 
@@ -263,9 +267,11 @@ Generado por Sistema SIGG.OS
       try {
         const w = window as any;
         if (!w.google || !w.google.maps) {
-             console.warn("Google Maps script loaded but google object not found.");
-             setUseFallback(true);
-             setIsLoading(false);
+             console.warn("Google Maps script loaded but google object not found or incomplete.");
+             if (isMounted) {
+                setUseFallback(true);
+                setIsLoading(false);
+             }
              return;
         }
 
@@ -277,7 +283,12 @@ Generado por Sistema SIGG.OS
                 const { Map } = await w.google.maps.importLibrary("maps");
                 MapConstructor = Map;
             } catch (e) {
-                console.warn("Failed to load maps library via importLibrary. API Key may be invalid for Maps.", e);
+                console.warn("Failed to load maps library via importLibrary. Switching to fallback.", e);
+                if (isMounted) {
+                    setUseFallback(true);
+                    setIsLoading(false);
+                }
+                return;
             }
         }
         
@@ -296,8 +307,7 @@ Generado por Sistema SIGG.OS
         }
 
         // Safe ControlPosition
-        // 9.0 is usually RIGHT_BOTTOM
-        let zoomControlPos = 9; 
+        let zoomControlPos = 9; // Default to RIGHT_BOTTOM
         if (w.google.maps.ControlPosition && w.google.maps.ControlPosition.RIGHT_BOTTOM !== undefined) {
              zoomControlPos = w.google.maps.ControlPosition.RIGHT_BOTTOM;
         }
@@ -314,12 +324,13 @@ Generado por Sistema SIGG.OS
 
         mapInstance.current = map;
         
-        // Ensure Marker is available or try to load it for later use in updateMarkers
+        // Preload marker library
         if (w.google.maps.importLibrary && !w.google.maps.Marker) {
              try {
-                // Preload marker library to ensure google.maps.Marker or compatible is available
                 await w.google.maps.importLibrary("marker");
-             } catch(e) {}
+             } catch(e) {
+                 console.warn("Failed to load Marker library", e);
+             }
         }
 
         if (isMounted) {
@@ -359,7 +370,6 @@ Generado por Sistema SIGG.OS
       // Inject Script
       const script = document.createElement('script');
       script.id = 'google-maps-script';
-      // Added &loading=async to src for better performance, requiring importLibrary in initMap
       script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&loading=async`;
       script.async = true;
       script.defer = true;
@@ -374,14 +384,14 @@ Generado por Sistema SIGG.OS
       document.head.appendChild(script);
     };
 
-    // Safety Timeout: If map doesn't load in 5s, fallback
+    // Safety Timeout: If map doesn't load in 3s (reduced from 5s for better UX), fallback
     initTimeoutRef.current = setTimeout(() => {
         if (isLoading && !mapInstance.current && isMounted) {
             console.warn("Map initialization timed out. Using fallback.");
             setUseFallback(true);
             setIsLoading(false);
         }
-    }, 5000);
+    }, 3000);
 
     loadMap();
 
